@@ -371,37 +371,38 @@ function pct(hist,n,p){let a=0;const t=n*p;for(let v=0;v<256;v++){a+=hist[v];if(
 /* Flatten uneven lighting / shadows: estimate the paper colour per region
    (block maxima, smoothed) and divide each pixel by it, so paper becomes white. */
 function normalizeBg(d,W,H){
+  /* Evens out lighting using LUMINANCE only, then white-balances once with a single global paper colour,
+     so coloured ink, photos and highlighters keep their true colours. */
   const B=Math.max(6,Math.round(Math.min(W,H)/36)),gw=Math.ceil(W/B),gh=Math.ceil(H/B);
-  let g=new Float32Array(gw*gh*3);
+  let g=new Float32Array(gw*gh);const cm=[new Float32Array(gw*gh),new Float32Array(gw*gh),new Float32Array(gw*gh)];
   for(let by=0;by<gh;by++)for(let bx=0;bx<gw;bx++){
-    let r=0,gg=0,b=0;const y1=Math.min(H,(by+1)*B),x0=bx*B,x1=Math.min(W,x0+B);
-    for(let y=by*B;y<y1;y++){let k=(y*W+x0)*4;for(let x=x0;x<x1;x++,k+=4){if(d[k]>r)r=d[k];if(d[k+1]>gg)gg=d[k+1];if(d[k+2]>b)b=d[k+2]}}
-    const o=(by*gw+bx)*3;g[o]=r;g[o+1]=gg;g[o+2]=b;
+    let ym=0,r=0,gg=0,b=0;const y1=Math.min(H,(by+1)*B),x0=bx*B,x1=Math.min(W,x0+B);
+    for(let y=by*B;y<y1;y++){let k=(y*W+x0)*4;for(let x=x0;x<x1;x++,k+=4){
+      const l=.299*d[k]+.587*d[k+1]+.114*d[k+2];if(l>ym){ym=l;r=d[k];gg=d[k+1];b=d[k+2]}}}
+    const o=by*gw+bx;g[o]=ym;cm[0][o]=r;cm[1][o]=gg;cm[2][o]=b;     // brightest pixel of the block (keeps its own colour)
   }
-  const ref=[0,0,0];
-  for(let c=0;c<3;c++){const a=[];for(let i=c;i<g.length;i+=3)a.push(g[i]);a.sort((x,y)=>x-y);ref[c]=a[Math.floor(a.length*.9)]||255}
+  const pct=a=>{const t=Array.from(a).sort((x,y)=>x-y);return t[Math.floor(t.length*.9)]||255};
+  const Yref=Math.max(40,pct(g)),ref=cm.map(a=>Math.max(40,pct(a)));       // global paper colour
   for(let pass=0;pass<2;pass++){
     const t=new Float32Array(g.length);
-    for(let y=0;y<gh;y++)for(let x=0;x<gw;x++)for(let c=0;c<3;c++){
+    for(let y=0;y<gh;y++)for(let x=0;x<gw;x++){
       let s=0,n=0;
-      for(let dy=-1;dy<=1;dy++){const yy=y+dy;if(yy<0||yy>=gh)continue;for(let dx=-1;dx<=1;dx++){const xx=x+dx;if(xx<0||xx>=gw)continue;s+=g[(yy*gw+xx)*3+c];n++}}
-      t[(y*gw+x)*3+c]=s/n;
+      for(let dy=-1;dy<=1;dy++){const yy=y+dy;if(yy<0||yy>=gh)continue;for(let dx=-1;dx<=1;dx++){const xx=x+dx;if(xx<0||xx>=gw)continue;s+=g[yy*gw+xx];n++}}
+      t[y*gw+x]=s/n;
     }
     g=t;
   }
-  const floor=ref.map(v=>Math.max(1,v*.36));
+  const floor=Yref*.36;
   const X0=new Int32Array(W),X1=new Int32Array(W),WX=new Float32Array(W);
-  for(let x=0;x<W;x++){let t=(x+.5)/B-.5;t=Math.min(gw-1,Math.max(0,t));const i=Math.floor(t);X0[x]=i*3;X1[x]=Math.min(gw-1,i+1)*3;WX[x]=t-i}
+  for(let x=0;x<W;x++){let t=(x+.5)/B-.5;t=Math.min(gw-1,Math.max(0,t));const i=Math.floor(t);X0[x]=i;X1[x]=Math.min(gw-1,i+1);WX[x]=t-i}
   for(let y=0;y<H;y++){
     let t=(y+.5)/B-.5;t=Math.min(gh-1,Math.max(0,t));
-    const j=Math.floor(t),fy=t-j,r0=j*gw*3,r1=Math.min(gh-1,j+1)*gw*3;
+    const j=Math.floor(t),fy=t-j,r0=j*gw,r1=Math.min(gh-1,j+1)*gw;
     for(let x=0,k=y*W*4;x<W;x++,k+=4){
       const a=X0[x],b=X1[x],wx=WX[x];
-      for(let c=0;c<3;c++){
-        const top=g[r0+a+c]*(1-wx)+g[r0+b+c]*wx,bot=g[r1+a+c]*(1-wx)+g[r1+b+c]*wx;
-        let bg=top*(1-fy)+bot*fy;if(bg<floor[c])bg=floor[c];
-        d[k+c]=255*d[k+c]/bg;
-      }
+      let bg=(g[r0+a]*(1-wx)+g[r0+b]*wx)*(1-fy)+(g[r1+a]*(1-wx)+g[r1+b]*wx)*fy;if(bg<floor)bg=floor;
+      const k2=Yref/bg;                                   // lighting gain, the same for all three channels
+      d[k]=255*d[k]*k2/ref[0];d[k+1]=255*d[k+1]*k2/ref[1];d[k+2]=255*d[k+2]*k2/ref[2];
     }
   }
 }
@@ -619,7 +620,7 @@ function refineQuad(g,W,H,q,bright){
 }
 /* Finds the page in a photo: segments paper from background (Otsu), takes the largest blob,
    reduces its convex hull to 4 corners. Returns normalized corners (TL,TR,BR,BL). */
-function detectQuad(img,w,h){
+function detectQuadMask(img,w,h){
   const full=[[0,0],[1,0],[1,1],[0,1]];
   try{
     const k=Math.min(1,640/Math.max(w,h)),W=Math.max(16,Math.round(w*k)),H=Math.max(16,Math.round(h*k));
@@ -672,6 +673,159 @@ function detectQuad(img,w,h){
     }
   }catch(e){console.warn('detectQuad failed',e)}
   return {found:false,pts:full,area:1};
+}
+/* ---- Edge/line based page finder: works with uneven light and low contrast ---- */
+function edgeField(img,w,h){
+  const k=Math.min(1,480/Math.max(w,h)),W=Math.max(32,Math.round(w*k)),H=Math.max(32,Math.round(h*k));
+  const c=document.createElement('canvas');c.width=W;c.height=H;
+  const g=c.getContext('2d',{willReadFrequently:true});g.drawImage(img,0,0,W,H);
+  const d=g.getImageData(0,0,W,H).data,n=W*H;
+  const ch=[0,1,2].map(o=>{const a=new Float32Array(n);for(let i=0;i<n;i++)a[i]=d[i*4+o];return boxBlur(boxBlur(a,W,H,1),W,H,1)});
+  const lum=new Float32Array(n);for(let i=0;i<n;i++)lum[i]=.299*ch[0][i]+.587*ch[1][i]+.114*ch[2][i];
+  const gx=new Float32Array(n),gy=new Float32Array(n),mag=new Float32Array(n);
+  const sob=(a,i)=>[(a[i-W+1]+2*a[i+1]+a[i+W+1]-a[i-W-1]-2*a[i-1]-a[i+W-1])/8,(a[i+W-1]+2*a[i+W]+a[i+W+1]-a[i-W-1]-2*a[i-W]-a[i-W+1])/8];
+  for(let y=1;y<H-1;y++)for(let x=1;x<W-1;x++){
+    const i=y*W+x;let bx=0,by=0,bm=0;
+    for(let q=0;q<3;q++){const [sx,sy]=sob(ch[q],i),m=sx*sx+sy*sy;if(m>bm){bm=m;bx=sx;by=sy}}
+    const [lx,ly]=sob(lum,i);if(bx*lx+by*ly<0){bx=-bx;by=-by}   // polarity follows brightness
+    gx[i]=bx;gy[i]=by;mag[i]=Math.sqrt(bm);
+  }
+  return {W,H,n,gx,gy,mag,d};
+}
+function thinEdges(F,pctile){
+  const {W,H,n,gx,gy,mag}=F;
+  const hist=new Uint32Array(1024);for(let i=0;i<n;i++)hist[Math.min(1023,mag[i]*8|0)]++;
+  let a=0,p=0;const tgt=n*pctile;for(;p<1024;p++){a+=hist[p];if(a>=tgt)break}
+  const thr=Math.max(1.6,p/8);
+  const ang=new Int16Array(n).fill(-1);
+  for(let y=1;y<H-1;y++)for(let x=1;x<W-1;x++){
+    const i=y*W+x,m=mag[i];if(m<thr)continue;
+    const ux=gx[i]/m,uy=gy[i]/m,xi=Math.round(ux),yi=Math.round(uy);
+    if(m<mag[i+yi*W+xi]||m<mag[i-yi*W-xi])continue;               // thin to 1px
+    let t=Math.atan2(gy[i],gx[i])*180/Math.PI;if(t<0)t+=360;ang[i]=Math.min(359,Math.round(t));
+  }
+  F.ang=ang;
+}
+const angDiff=(a,b)=>{let d=Math.abs(a-b)%360;return d>180?360-d:d};
+function quadSupport(F,P,pol){           // P ordered around the shape; pol=+1 gradient points inward, -1 outward
+  const {W,H,ang,d}=F,cx=P.reduce((s,p)=>s+p[0],0)/4,cy=P.reduce((s,p)=>s+p[1],0)/4,cov=[];
+  const nb=p=>[p[0]<=4,p[0]>=W-5,p[1]<=4,p[1]>=H-5],fr=P.map((A,i)=>{const a=nb(A),b=nb(P[(i+1)%4]);return a.some((v,k)=>v&&b[k])});
+  const inN=i=>{const A=P[i],B=P[(i+1)%4],L=Math.hypot(B[0]-A[0],B[1]-A[1])||1;let nx=-(B[1]-A[1])/L,ny=(B[0]-A[0])/L;if(nx*((A[0]+B[0])/2-cx)+ny*((A[1]+B[1])/2-cy)>0){nx=-nx;ny=-ny}return [nx,ny]};
+  const px_=(x,y)=>{x=Math.max(0,Math.min(W-1,Math.round(x)));y=Math.max(0,Math.min(H-1,Math.round(y)));const o=(y*W+x)*4;return [d[o],d[o+1],d[o+2]]};
+  let pc=null;
+  if(fr.some(Boolean)){                                  // colour of the page, sampled just inside the sides that are really visible
+    const sm=[[],[],[]];
+    for(let i=0;i<4;i++){if(fr[i])continue;const A=P[i],B=P[(i+1)%4],[nx,ny]=inN(i);
+      for(let s=.15;s<=.85;s+=.05){const c=px_(A[0]+(B[0]-A[0])*s+nx*6,A[1]+(B[1]-A[1])*s+ny*6);for(let k=0;k<3;k++)sm[k].push(c[k])}}
+    if(sm[0].length>=6)pc=sm.map(a=>a.sort((x,y)=>x-y)[a.length>>1]);
+  }
+  for(let i=0;i<4;i++){
+    const A=P[i],B=P[(i+1)%4],ex=B[0]-A[0],ey=B[1]-A[1],L=Math.hypot(ex,ey);if(L<4)return null;
+    let nx=-ey/L,ny=ex/L;if(nx*((A[0]+B[0])/2-cx)+ny*((A[1]+B[1])/2-cy)>0){nx=-nx;ny=-ny}   // inward normal
+    let want=Math.atan2(ny,nx)*180/Math.PI;if(pol<0)want+=180;want=(want+360)%360;
+    let hit=0,tot=0;
+    for(let s=.03;s<=.97;s+=1.5/L){
+      const px=A[0]+ex*s,py=A[1]+ey*s;tot++;
+      if(fr[i]){                                            // side lies on the picture frame: valid only if the page colour continues up to it
+        if(!pc){hit+=.4;continue}
+        const [nx2,ny2]=inN(i),c=px_(px+nx2*3,py+ny2*3);
+        if(Math.hypot(c[0]-pc[0],c[1]-pc[1],c[2]-pc[2])<28)hit++;
+        continue;
+      }
+      let ok=false;
+      for(let dy=-2;dy<=2&&!ok;dy++)for(let dx=-2;dx<=2;dx++){
+        const x=Math.round(px)+dx,y=Math.round(py)+dy;if(x<0||y<0||x>=W||y>=H)continue;
+        const t=ang[y*W+x];if(t>=0&&angDiff(t,want)<24){ok=true;break}
+      }
+      if(ok)hit++;
+    }
+    cov.push(tot?hit/tot:0);
+  }
+  const mn=Math.min(...cov),mean=cov.reduce((s,v)=>s+v,0)/4;
+  return {cov,min:mn,mean,score:.7*mean+.3*mn};
+}
+function houghPass(F){
+  const {W,H,ang}=F,n=W*H;
+  const TB=180,dth=2,diag=Math.ceil(Math.hypot(W,H)),RB=2*diag+1,acc=new Float32Array(TB*RB);
+  const cs=new Float32Array(TB),sn=new Float32Array(TB);for(let t=0;t<TB;t++){cs[t]=Math.cos(t*dth*Math.PI/180);sn[t]=Math.sin(t*dth*Math.PI/180)}
+  const E=[];
+  for(let y=1;y<H-1;y++)for(let x=1;x<W-1;x++){
+    const i=y*W+x,a=ang[i];if(a<0)continue;E.push(i);
+    const c=Math.round(a/dth);
+    for(let t=c-3;t<=c+3;t++){const tt=((t%TB)+TB)%TB;acc[tt*RB+Math.round(x*cs[tt]+y*sn[tt])+diag]++}
+  }
+  const acc2=new Float32Array(acc.length);
+  for(let t=0;t<TB;t++)for(let r=1;r<RB-1;r++)acc2[t*RB+r]=acc[t*RB+r-1]+acc[t*RB+r]+acc[t*RB+r+1];
+  const minV=.14*Math.min(W,H),peaks=[];
+  for(let t=0;t<TB;t++)for(let r=4;r<RB-4;r++){
+    const v=acc2[t*RB+r];if(v<minV)continue;
+    let mx=true;
+    for(let dt=-3;dt<=3&&mx;dt++){const tt=((t+dt)%TB+TB)%TB;for(let dr=-4;dr<=4;dr++){if((dt||dr)&&acc2[tt*RB+r+dr]>v||((dt||dr)&&acc2[tt*RB+r+dr]===v&&(dt<0||(dt===0&&dr<0)))){mx=false;break}}}
+    if(mx)peaks.push({t,r:r-diag,v});
+  }
+  peaks.sort((a,b)=>b.v-a.v);
+  const lines=[];
+  for(const pk of peaks.slice(0,26)){
+    const th=pk.t*dth,tr=th*Math.PI/180,c=Math.cos(tr),s=Math.sin(tr),pts=[];
+    for(const i of E){const x=i%W,y=(i-x)/W;if(Math.abs(x*c+y*s-pk.r)<2.5&&angDiff(ang[i],th)<16)pts.push([x,y])}
+    const ln=fitLine(pts);if(!ln)continue;
+    let nx=-ln.d[1],ny=ln.d[0];if(nx*c+ny*s<0){nx=-nx;ny=-ny}
+    lines.push({p:ln.p,d:ln.d,n:[nx,ny],th:Math.atan2(ny,nx)*180/Math.PI,v:pk.v});
+  }
+  lines.forEach(l=>{if(l.th<0)l.th+=360});
+  for(const [px,py,dx,dy] of [[1,1,1,0],[W-2,1,0,1],[1,H-2,1,0],[1,1,0,1]])for(const out of [false,true]){   // the frame edges, for pages that run out of view
+    let nx=-dy,ny=dx;if(nx*(W/2-px)+ny*(H/2-py)<0){nx=-nx;ny=-ny}
+    if(out){nx=-nx;ny=-ny}
+    let th=Math.atan2(ny,nx)*180/Math.PI;if(th<0)th+=360;
+    lines.push({p:[px,py],d:[dx,dy],n:[nx,ny],th,v:0,frame:true});
+  }
+  lines.sort((a,b)=>a.th-b.th);
+  const D={bad:0,cvx:0,area:0,pol:0,sup:0,ok:0};
+  let best=null;const N=lines.length,gap=(a,b)=>((b-a)%360+360)%360;
+  const minEdge=.15*Math.min(W,H);
+  for(let a=0;a<N;a++)for(let b=a+1;b<N;b++){const g1=gap(lines[a].th,lines[b].th);if(g1<35||g1>145)continue;
+   for(let c=b+1;c<N;c++){const g2=gap(lines[b].th,lines[c].th);if(g2<35||g2>145)continue;
+    for(let d=c+1;d<N;d++){
+      const g3=gap(lines[c].th,lines[d].th),g4=gap(lines[d].th,lines[a].th);if(g3<35||g3>145||g4<35||g4>145)continue;
+      const L=[lines[a],lines[b],lines[c],lines[d]],P=[];let bad=false;
+      if(L.filter(l=>l.frame).length>2)continue;
+      for(let i=0;i<4;i++){const q=intersectLines(L[i],L[(i+1)%4]);if(!q||q[0]<-.05*W||q[0]>1.05*W||q[1]<-.05*H||q[1]>1.05*H){bad=true;break}P.push(q)}
+      if(bad){D.bad++;continue}
+      let sg=0,cvx=true;
+      for(let i=0;i<4;i++){const o=P[i],p1=P[(i+1)%4],p2=P[(i+2)%4],cr=(p1[0]-o[0])*(p2[1]-p1[1])-(p1[1]-o[1])*(p2[0]-p1[0]);if(!sg)sg=Math.sign(cr);else if(Math.sign(cr)!==sg)cvx=false;if(Math.hypot(p1[0]-o[0],p1[1]-o[1])<minEdge)cvx=false}
+      if(!cvx){D.cvx++;continue}
+      const ar=polyArea(P)/n;if(ar<.1||ar>.97){D.area++;continue}
+      const cx=P.reduce((s,p)=>s+p[0],0)/4,cy=P.reduce((s,p)=>s+p[1],0)/4;
+      let pos=0,neg=0;for(const l of L){const s=l.n[0]*(cx-l.p[0])+l.n[1]*(cy-l.p[1]);if(s>0)pos++;else neg++}
+      if(pos&&neg){D.pol++;continue}                                   // normals must all point in, or all point out
+      const q=orderQuad(P),sp=quadSupport(F,q,pos?1:-1);if(!sp||sp.min<.35){D.sup++;if(sp&&(!D.bs||sp.score>D.bs.score))D.bs={...sp,ar};continue}D.ok++;
+      const score=sp.score+.7*ar;
+      if(!best||score>best.s2)best={s2:score,score:sp.score,sp,q,ar};
+    }}}
+  return best?{score:best.score,sp:best.sp,q:best.q,ar:best.ar}:null;
+}
+function detectQuadHough(img,w,h){
+  const F=edgeField(img,w,h),{W,H}=F;let best=null,bestF=null;
+  for(const pc of [.9,.8,.66]){
+    thinEdges(F,pc);
+    const r=houghPass(F);
+    if(r&&(!best||r.score>best.score)){best=r;bestF={...F}}
+    if(best&&best.sp.score>=.9)break;
+  }
+  const res=best?{found:true,pts:best.q.map(([x,y])=>{const mx=best.q.reduce((s,p)=>s+p[0],0)/4,my=best.q.reduce((s,p)=>s+p[1],0)/4;return [(x+(mx-x)*.003)/W,(y+(my-y)*.003)/H]}),area:best.ar}:null;
+  const FF=bestF||F;
+  const scoreOf=pts=>{const P=pts.map(([x,y])=>[x*W,y*H]);let b=0;for(const pol of [1,-1]){const s=quadSupport(FF,P,pol);if(s&&s.score>b)b=s.score}return b};
+  return {res,score:best?best.sp.score:0,scoreOf};
+}
+function detectQuad(img,w,h){
+  let hq=null;try{hq=detectQuadHough(img,w,h)}catch(e){console.warn('hough failed',e)}
+  const hOk=hq&&hq.res&&hq.score>=.55;
+  if(hOk&&hq.score>=.9)return hq.res;
+  const mq=detectQuadMask(img,w,h);
+  if(!hOk)return mq;
+  if(!mq.found)return hq.res;
+  const ms=hq.scoreOf(mq.pts);
+  return ms>=.55&&ms+.7*mq.area>hq.score+.7*hq.res.area+.03?mq:hq.res;      // prefer the candidate whose edges are best supported (larger one wins ties)
 }
 function autoCropItem(it){
   const q=detectQuad(it.img,it.w,it.h);
