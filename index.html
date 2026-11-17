@@ -143,6 +143,10 @@ video{width:100%;max-height:360px;background:#000;border-radius:10px}
 .camov{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
 .camov polygon{fill:rgba(22,163,74,.18);stroke:#2bd96b;stroke-width:3;stroke-linejoin:round;vector-effect:non-scaling-stroke}
 .camov line{stroke:rgba(255,255,255,.35);stroke-width:1;vector-effect:non-scaling-stroke}
+.camguide{position:absolute;inset:7%;pointer-events:none;--c:rgba(255,255,255,.85)}
+.camguide i{position:absolute;width:34px;height:34px;border:0 solid var(--c)}
+.camguide i:nth-child(1){left:0;top:0;border-width:4px 0 0 4px;border-radius:10px 0 0 0}.camguide i:nth-child(2){right:0;top:0;border-width:4px 4px 0 0;border-radius:0 10px 0 0}
+.camguide i:nth-child(3){left:0;bottom:0;border-width:0 0 4px 4px;border-radius:0 0 0 10px}.camguide i:nth-child(4){right:0;bottom:0;border-width:0 4px 4px 0;border-radius:0 0 10px 0}
 .campill{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);background:rgba(0,0,0,.62);padding:6px 16px;border-radius:999px;font-weight:600;font-size:14.5px;white-space:nowrap;pointer-events:none;transition:background .15s}
 .campill.ok{background:var(--accent)}
 .camflash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none}
@@ -1068,22 +1072,20 @@ function imageTool(scan){
   if(scan){
     /* ----- CamScanner-style full-screen camera ----- */
     const NS='http://www.w3.org/2000/svg';
-    let stream=null,track=null,devs=[],devIdx=0,mode='batch',autoShot=false,showGrid=false,torchOn=false;
-    let cur=null,stableSince=0,armed=true,miss=0,loopT=0,shooting=false,shots=0,lastShotPts=null;
+    let stream=null,track=null,devs=[],devIdx=0,mode='batch',showGrid=false,torchOn=false;
+    let loopT=0,shooting=false,shots=0;
     const video=h('video',{autoplay:true,playsinline:true,muted:true});
     const ov=document.createElementNS(NS,'svg');ov.setAttribute('class','camov');ov.setAttribute('viewBox','0 0 1 1');ov.setAttribute('preserveAspectRatio','none');
     const grid=document.createElementNS(NS,'g');
     for(const [a,b,c,d] of [[1/3,0,1/3,1],[2/3,0,2/3,1],[0,1/3,1,1/3],[0,2/3,1,2/3]]){const l=document.createElementNS(NS,'line');l.setAttribute('x1',a);l.setAttribute('y1',b);l.setAttribute('x2',c);l.setAttribute('y2',d);grid.append(l)}
     grid.setAttribute('display','none');
-    const poly=document.createElementNS(NS,'polygon');poly.setAttribute('display','none');
-    ov.append(grid,poly);
+    ov.append(grid);
     const flash=h('div',{class:'camflash'});
-    const stage=h('div',{class:'camstage'},video,ov,flash);
+    const stage=h('div',{class:'camstage'},video,ov,h('div',{class:'camguide'},h('i'),h('i'),h('i'),h('i')),flash);
     const pill=h('div',{class:'campill'},'Starting camera…');
     const area=h('div',{class:'camarea'},stage,pill);
     const torchBtn=h('button',{class:'cbtn',title:'Flash',hidden:true,onclick:()=>toggleTorch()},ic('bolt'));
     const flipBtn=h('button',{class:'cbtn',title:'Switch camera',hidden:true,onclick:()=>start(devs[(devIdx+1)%devs.length].deviceId)},ic('flip'));
-    const autoBtn=h('button',{class:'cbtn',title:'Auto-capture when the page is steady',onclick:()=>{autoShot=!autoShot;autoBtn.classList.toggle('on',autoShot);armed=true;stableSince=0}},ic('auto'));
     const gridBtn=h('button',{class:'cbtn',title:'Grid',onclick:()=>{showGrid=!showGrid;gridBtn.classList.toggle('on',showGrid);grid.setAttribute('display',showGrid?'inline':'none')}},ic('grid'));
     const closeBtn=h('button',{class:'cbtn',title:'Close camera',onclick:()=>closeCam()},ic('x'));
     const tabS=h('button',{onclick:()=>setMode('single')},'Single'),tabB=h('button',{class:'on',onclick:()=>setMode('batch')},'Batch');
@@ -1091,7 +1093,7 @@ function imageTool(scan){
     const shutter=h('button',{class:'shutter',title:'Capture (Space)',onclick:()=>shoot()},h('i'));
     const doneBtn=h('button',{class:'camdone',onclick:()=>closeCam()},ic('check'),'Done');
     const cam=h('div',{id:'cam'},
-      h('div',{class:'camtop'},closeBtn,h('span',{class:'ttl'},'Scan'),h('span',{class:'sp'}),autoBtn,gridBtn,torchBtn,flipBtn),
+      h('div',{class:'camtop'},closeBtn,h('span',{class:'ttl'},'Scan'),h('span',{class:'sp'}),gridBtn,torchBtn,flipBtn),
       area,
       h('div',{class:'cambot'},h('div',{class:'camtabs'},tabS,tabB),
         h('div',{class:'camrow'},thumb,shutter,doneBtn)));
@@ -1122,8 +1124,7 @@ function imageTool(scan){
         const caps=track.getCapabilities?track.getCapabilities():{};
         torchBtn.hidden=!caps.torch;torchOn=false;torchBtn.classList.remove('on');
         try{if(caps.focusMode&&caps.focusMode.includes('continuous'))await track.applyConstraints({advanced:[{focusMode:'continuous'}]})}catch(_){}
-        fit();cur=null;miss=0;stableSince=0;armed=true;
-        clearTimeout(loopT);loop();
+        fit();setPill('Fit the page in the frame, then tap the shutter');
       }catch(e){
         cam.classList.remove('on');
         toast('Camera not available: '+(e.message||e.name),'err');
@@ -1135,35 +1136,14 @@ function imageTool(scan){
     }
     function killStream(){clearTimeout(loopT);if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;track=null;video.srcObject=null}
     function closeCam(){
-      killStream();cam.classList.remove('on');poly.setAttribute('display','none');
+      killStream();cam.classList.remove('on');
       if(shots){status.textContent=`${shots} page${shots>1?'s':''} scanned. Click a page to adjust the crop or filter.`;shots=0}
       thumb.style.visibility='hidden';render();
     }
     function setPill(t,ok){pill.textContent=t;pill.classList.toggle('ok',!!ok)}
-    const dist=(a,b)=>a.reduce((s,p,i)=>s+Math.hypot(p[0]-b[i][0],p[1]-b[i][1]),0)/a.length;
-    function loop(){
-      if(!stream||!cam.classList.contains('on'))return;
-      if(video.videoWidth&&!shooting){
-        const q=detectQuad(video,video.videoWidth,video.videoHeight),now=performance.now();
-        if(q.found){
-          miss=0;
-          if(cur&&dist(cur,q.pts)<.02){stableSince=stableSince||now}else stableSince=0;
-          cur=cur?cur.map((p,i)=>[p[0]+(q.pts[i][0]-p[0])*.55,p[1]+(q.pts[i][1]-p[1])*.55]):q.pts;
-          poly.setAttribute('points',cur.map(p=>p.join(',')).join(' '));poly.setAttribute('display','inline');
-          const steady=stableSince&&now-stableSince>700;
-          setPill(steady?(autoShot?'Hold steady…':'Page found'):'Page found',steady);
-          if(lastShotPts&&dist(lastShotPts,q.pts)>.12)armed=true;
-          if(autoShot&&armed&&stableSince&&now-stableSince>1300){armed=false;lastShotPts=cur.map(p=>[...p]);shoot()}
-        }else{
-          if(++miss>=3){cur=null;stableSince=0;poly.setAttribute('display','none');setPill('Point the camera at a page');armed=true}
-        }
-      }
-      loopT=setTimeout(loop,200);
-    }
     async function shoot(){
       if(!stream||!video.videoWidth||shooting)return;shooting=true;
       flash.classList.remove('go');void flash.offsetWidth;flash.classList.add('go');
-      const live=cur?cur.map(p=>[...p]):null;
       const c=document.createElement('canvas');c.width=video.videoWidth;c.height=video.videoHeight;
       c.getContext('2d').drawImage(video,0,0);
       try{
@@ -1171,7 +1151,8 @@ function imageTool(scan){
         const f=new File([blob],`scan-${String(++scanN).padStart(2,'0')}.jpg`,{type:'image/jpeg'});
         const m=await loadImage(f);
         const item={id:++uid,name:f.name,rot:0,fx:newFx(filter.value),crop:null,...m};
-        if(!autoCropItem(item)&&live)item.crop={on:true,pts:live};
+        await new Promise(r=>setTimeout(r,30));      // let the flash and the UI paint first
+        autoCropItem(item);                          // smart crop runs after the photo is taken
         items.push(item);shots++;
         const t=drawItem(item,160);thumb.replaceChildren(t,h('span',{class:'n'},String(shots)));thumb.style.visibility='visible';
         if(mode==='single'){shooting=false;closeCam();return}
@@ -1187,7 +1168,7 @@ function imageTool(scan){
     IC.camera=TG.camera;
     el.append(h('div',{class:'panel'},h('div',{class:'camcta'},
       tile({color:'#8b5cf6',icon:'camera'},true),
-      h('div',{class:'txt'},h('b',{},'Scan with your camera'),h('span',{class:'stat'},'Full-screen scanner. The page is outlined live, then cropped, straightened and cleaned up on capture. Use Batch for several pages in a row.')),
+      h('div',{class:'txt'},h('b',{},'Scan with your camera'),h('span',{class:'stat'},'Full-screen camera. Take the photo, and the page is found, cropped, straightened and cleaned up automatically. Use Batch for several pages in a row.')),
       h('button',{class:'btn pri',onclick:()=>start()},ic('camera'),'Open camera'))));
     api.hide=closeCam;
   }
