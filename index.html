@@ -118,6 +118,21 @@ video{width:100%;max-height:360px;background:#000;border-radius:10px}
 .cropstage canvas{position:static!important;transform:none!important;display:block;box-shadow:none!important}
 .cropsvg{position:absolute;left:0;top:0;pointer-events:none}
 .chandle{position:absolute;width:26px;height:26px;margin:-13px 0 0 -13px;border-radius:50%;background:var(--accent);border:3px solid #fff;box-shadow:0 1px 6px rgba(0,0,0,.5);cursor:grab;touch-action:none}
+#ed{z-index:70}
+.setbtn{display:flex;align-items:center;gap:10px;width:100%;background:none;border:0;font:inherit;font-weight:700;font-size:16px;color:var(--ink);cursor:pointer;padding:0;text-align:left}
+.setbtn .hint{flex:1;font-weight:500;font-size:13px;color:var(--muted)}
+.setbtn .chev{transition:transform .18s}.setbtn[aria-expanded=true] .chev{transform:rotate(180deg)}
+.setbody{margin-top:14px;padding-top:14px;border-top:1px solid var(--line)}
+#camrev{position:absolute;inset:0;background:#000;z-index:5;display:none;flex-direction:column}
+#camrev.on{display:flex}
+#camrev .rvmsg{text-align:center;padding:14px 16px 4px;font-weight:600;font-size:15px}
+#camrev .rvarea{flex:1;min-height:0;position:relative}
+#camrev .rvarea canvas{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);box-shadow:0 4px 30px rgba(0,0,0,.6);background:#fff}
+#camrev .rvbar{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;padding:14px 16px 24px}
+.rvbtn{display:inline-flex;align-items:center;gap:8px;border:0;border-radius:999px;padding:13px 22px;font:inherit;font-weight:700;font-size:16px;cursor:pointer;background:rgba(255,255,255,.18);color:#fff}
+.rvbtn:hover{background:rgba(255,255,255,.28)}
+.rvbtn.pri{background:var(--accent)}
+.rvbtn svg{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:2.3;stroke-linecap:round;stroke-linejoin:round}
 [hidden]{display:none!important}
 .hgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;margin-top:6px}
 .hcard{display:flex;align-items:center;gap:16px;padding:20px;border:1.5px solid var(--line);border-radius:18px;background:#fff;text-align:left;cursor:pointer;font:inherit;color:var(--ink);box-shadow:var(--shadow);transition:.15s}
@@ -275,6 +290,8 @@ const IC={
   grid:'<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M15 3v18M3 9h18M3 15h18"/>',
   check:'<path d="M5 12.5l5 5L19 7"/>',
   flip:'<path d="M3 8V4h4M21 16v4h-4"/><path d="M4.5 9A8.5 8.5 0 0 1 20 8M19.5 15A8.5 8.5 0 0 1 4 16"/>',
+  camera:'<path d="M3 8a2 2 0 0 1 2-2h2.5l1.5-2h6l1.5 2H19a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><circle cx="12" cy="13" r="3.8"/>',
+  chev:'<path d="M6 9l6 6 6-6"/>',
   auto:'<circle cx="12" cy="12" r="9"/><path d="M8.5 15.5L12 7l3.5 8.5M9.8 12.8h4.4"/>'
 };
 function ic(n){const e=document.createElement('span');e.className='ico';e.innerHTML=`<svg viewBox="0 0 24 24" aria-hidden="true">${IC[n]}</svg>`;return e}
@@ -880,10 +897,12 @@ function getEditor(){
   const cropHelp=h('div',{hidden:true},h('h3',{},'Adjust corners'),
     h('p',{class:'stat',style:'margin:0 0 12px'},'Drag the four round handles onto the corners of the page, then apply.'),
     h('div',{class:'bar',style:'margin:0'},btn('Detect again',detectAgain),btn('Cancel',cancelCrop),btn('Apply crop',applyCrop,'pri')));
+  let startCrop=false,onRetake=null;
+  const retakeBtn=btn([ic('camera'),'Retake'],()=>{if(onRetake)onRetake()});retakeBtn.hidden=true;
   const box=h('div',{class:'edbox'},
     h('div',{class:'edtop'},
       btn(ic('left'),()=>go(-1)),title,btn(ic('right'),()=>go(1)),h('span',{style:'flex:1'}),
-      btn([ic('rotR'),'Rotate'],rotate),btn('Apply to all pages',applyAll),btn('Reset',reset),btn('Done',close,'pri')),
+      retakeBtn,btn([ic('rotR'),'Rotate'],rotate),btn('Apply to all pages',applyAll),btn('Reset',reset),btn('Done',close,'pri')),
     prev,h('div',{class:'edside'},filterSide,cropHelp));
   const root=h('div',{id:'ed'});root.append(box);document.body.append(root);
   root.addEventListener('click',e=>{if(e.target===root)close()});
@@ -914,6 +933,7 @@ function getEditor(){
     try{b=await getBases(it)}catch(e){console.error(e);if(my===tok)toast('Could not render this page','err');return}
     if(my!==tok)return;
     base=b.base;small=b.small;buildChips();paint();
+    if(startCrop){startCrop=false;enterCrop()}
   }
   function go(d){const j=idx+d;if(j<0||j>=items.length)return;idx=j;load()}
   function rotate(){it.rot=(it.rot+90)%360;load()}
@@ -979,7 +999,7 @@ function getEditor(){
   ED={
     open(its,i,opts){
       opts=opts||{};items=its;idx=i;getBases=opts.getBases||defaultBases;onClose=opts.onClose||(()=>{});onApplyAll=opts.onApplyAll||(()=>{});
-      cropSec.hidden=!opts.crop;root.classList.add('on');load();
+      cropSec.hidden=!opts.crop;onRetake=opts.onRetake||null;retakeBtn.hidden=!onRetake;startCrop=!!opts.startCrop;root.classList.add('on');load();
     },
     close,isOpen:()=>root.classList.contains('on')
   };
@@ -1020,7 +1040,7 @@ function imageTool(scan){
   }
   function move(i,d){const j=i+d;if(j<0||j>=items.length)return;[items[i],items[j]]=[items[j],items[i]];render()}
   function remove(i){URL.revokeObjectURL(items[i].url);items.splice(i,1);render()}
-  function edit(i){getEditor().open(items,i,{crop:true,onClose:render,onApplyAll:f=>{filter.value=f.filter}})}
+  function edit(i){getEditor().open(items,i,{crop:true,onClose:render,onApplyAll:f=>{filter.value=f.filter},onRetake:scan?()=>{getEditor().close();api.retake(i)}:null})}
   function render(){
     count.textContent=items.length?`${items.length} image${items.length>1?'s':''} · click a page to crop or adjust filters · drag to reorder`:'No images yet';
     build.disabled=!items.length||busy;clear.hidden=!items.length;autoAll.hidden=!items.length;noCrops.hidden=!items.some(it=>it.crop&&it.crop.on);
@@ -1035,6 +1055,7 @@ function imageTool(scan){
           h('button',{title:'Move earlier',onclick:()=>move(i,-1)},ic('left')),
           h('button',{title:'Move later',onclick:()=>move(i,1)},ic('right')),
           h('button',{title:'Rotate',onclick:()=>{it.rot=(it.rot+90)%360;render()}},ic('rotR')),
+          scan?h('button',{title:'Retake this page',onclick:()=>api.retake(i)},ic('camera')):null,
           h('button',{title:'Remove',onclick:()=>remove(i)},ic('x'))));
       sortable(card,i,items,render);return card;
     }));
@@ -1073,7 +1094,7 @@ function imageTool(scan){
     /* ----- CamScanner-style full-screen camera ----- */
     const NS='http://www.w3.org/2000/svg';
     let stream=null,track=null,devs=[],devIdx=0,mode='batch',showGrid=false,torchOn=false;
-    let loopT=0,shooting=false,shots=0;
+    let loopT=0,shooting=false,shots=0,retakeIdx=-1,pending=null;
     const video=h('video',{autoplay:true,playsinline:true,muted:true});
     const ov=document.createElementNS(NS,'svg');ov.setAttribute('class','camov');ov.setAttribute('viewBox','0 0 1 1');ov.setAttribute('preserveAspectRatio','none');
     const grid=document.createElementNS(NS,'g');
@@ -1092,11 +1113,16 @@ function imageTool(scan){
     const thumb=h('button',{class:'camthumb',title:'Finish and review pages',onclick:()=>closeCam()});thumb.style.visibility='hidden';
     const shutter=h('button',{class:'shutter',title:'Capture (Space)',onclick:()=>shoot()},h('i'));
     const doneBtn=h('button',{class:'camdone',onclick:()=>closeCam()},ic('check'),'Done');
+    const rvMsg=h('div',{class:'rvmsg'}),rvArea=h('div',{class:'rvarea'});
+    const rev=h('div',{id:'camrev'},rvMsg,rvArea,h('div',{class:'rvbar'},
+      h('button',{class:'rvbtn',onclick:()=>retakeNow()},ic('rotL'),'Retake'),
+      h('button',{class:'rvbtn',onclick:()=>customCrop()},ic('crop'),'Custom crop'),
+      h('button',{class:'rvbtn pri',onclick:()=>keepShot()},ic('check'),'Keep')));
     const cam=h('div',{id:'cam'},
       h('div',{class:'camtop'},closeBtn,h('span',{class:'ttl'},'Scan'),h('span',{class:'sp'}),gridBtn,torchBtn,flipBtn),
       area,
       h('div',{class:'cambot'},h('div',{class:'camtabs'},tabS,tabB),
-        h('div',{class:'camrow'},thumb,shutter,doneBtn)));
+        h('div',{class:'camrow'},thumb,shutter,doneBtn)),rev);
     document.body.append(cam);
 
     function setMode(m){mode=m;tabS.classList.toggle('on',m==='single');tabB.classList.toggle('on',m==='batch');doneBtn.style.visibility=m==='single'?'hidden':'visible'}
@@ -1111,7 +1137,8 @@ function imageTool(scan){
 
     async function start(deviceId){
       killStream();
-      cam.classList.add('on');setPill('Starting camera…');
+      cam.classList.add('on');setPill(retakeIdx>=0?`Retaking page ${retakeIdx+1}`:'Starting camera…');
+      try{if(!document.fullscreenElement&&document.documentElement.requestFullscreen)document.documentElement.requestFullscreen({navigationUI:'hide'}).catch(()=>{})}catch(_){}
       try{
         const base={width:{ideal:3840},height:{ideal:2160}};
         const v=deviceId?{...base,deviceId:{exact:deviceId}}:{...base,facingMode:{ideal:'environment'}};
@@ -1124,7 +1151,7 @@ function imageTool(scan){
         const caps=track.getCapabilities?track.getCapabilities():{};
         torchBtn.hidden=!caps.torch;torchOn=false;torchBtn.classList.remove('on');
         try{if(caps.focusMode&&caps.focusMode.includes('continuous'))await track.applyConstraints({advanced:[{focusMode:'continuous'}]})}catch(_){}
-        fit();setPill('Point at the page and tap the shutter');
+        fit();setPill(retakeIdx>=0?`Retaking page ${retakeIdx+1}: tap the shutter`:'Point at the page and tap the shutter');
       }catch(e){
         cam.classList.remove('on');
         toast('Camera not available: '+(e.message||e.name),'err');
@@ -1136,7 +1163,8 @@ function imageTool(scan){
     }
     function killStream(){clearTimeout(loopT);if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;track=null;video.srcObject=null}
     function closeCam(){
-      killStream();cam.classList.remove('on');
+      killStream();cam.classList.remove('on');rev.classList.remove('on');pending=null;retakeIdx=-1;
+      try{if(document.fullscreenElement&&document.exitFullscreen)document.exitFullscreen().catch(()=>{})}catch(_){}
       if(shots){status.textContent=`${shots} page${shots>1?'s':''} scanned. Click a page to adjust the crop or filter.`;shots=0}
       thumb.style.visibility='hidden';render();
     }
@@ -1151,16 +1179,44 @@ function imageTool(scan){
         const f=new File([blob],`scan-${String(++scanN).padStart(2,'0')}.jpg`,{type:'image/jpeg'});
         const m=await loadImage(f);
         const item={id:++uid,name:f.name,rot:0,fx:newFx(filter.value),crop:null,...m};
+        if(retakeIdx>=0&&items[retakeIdx]){item.rot=0;item.fx={...items[retakeIdx].fx}}
         await new Promise(r=>setTimeout(r,30));      // let the flash and the UI paint first
-        autoCropItem(item);                          // smart crop runs after the photo is taken
-        items.push(item);shots++;
-        const t=drawItem(item,160);thumb.replaceChildren(t,h('span',{class:'n'},String(shots)));thumb.style.visibility='visible';
-        if(mode==='single'){shooting=false;closeCam();return}
+        const found=autoCropItem(item);              // smart crop runs after the photo is taken
+        pending=item;showReview(found);
       }catch(e){console.error(e);toast('Could not capture the page','err')}
       shooting=false;
     }
+    /* ----- review after the shot: auto-cropped result, with Retake / Custom crop / Keep ----- */
+    function showReview(found){
+      rvMsg.textContent=found?'Page found and auto-cropped. Keep it, retake it, or adjust the crop yourself.':"Couldn't find the page edges. Use Custom crop to set them, or retake.";
+      rev.classList.add('on');paintReview();
+    }
+    function paintReview(){
+      if(!pending)return;
+      const c=drawItem(pending,1600);fitRot(c,0,Math.max(60,rvArea.clientWidth-24),Math.max(60,rvArea.clientHeight-24));rvArea.replaceChildren(c);
+    }
+    window.addEventListener('resize',()=>{if(rev.classList.contains('on'))paintReview()});
+    function retakeNow(){pending=null;rev.classList.remove('on');setPill(retakeIdx>=0?`Retaking page ${retakeIdx+1}: tap the shutter`:'Point at the page and tap the shutter')}
+    function customCrop(){
+      if(!pending)return;
+      getEditor().open([pending],0,{crop:true,startCrop:true,onClose:()=>paintReview()});
+    }
+    function keepShot(){
+      if(!pending)return;
+      const item=pending;pending=null;rev.classList.remove('on');
+      if(retakeIdx>=0&&items[retakeIdx]){URL.revokeObjectURL(items[retakeIdx].url);items[retakeIdx]=item;status.textContent=`Page ${retakeIdx+1} retaken.`;closeCam();return}
+      items.push(item);shots++;
+      const t=drawItem(item,160);thumb.replaceChildren(t,h('span',{class:'n'},String(shots)));thumb.style.visibility='visible';
+      if(mode==='single')closeCam();
+    }
     document.addEventListener('keydown',e=>{
       if(!cam.classList.contains('on'))return;
+      if(getEditor().isOpen())return;
+      if(rev.classList.contains('on')){
+        if(e.key==='Escape'){e.stopPropagation();retakeNow()}
+        else if(e.key==='Enter'){e.preventDefault();keepShot()}
+        return;
+      }
       if(e.key==='Escape'){e.stopPropagation();closeCam()}
       else if(e.key===' '||e.key==='Enter'){e.preventDefault();shoot()}
     },true);
@@ -1171,11 +1227,17 @@ function imageTool(scan){
       h('div',{class:'txt'},h('b',{},'Scan with your camera'),h('span',{class:'stat'},'Full-screen camera. Take the photo, and the page is found, cropped, straightened and cleaned up automatically. Use Batch for several pages in a row.')),
       h('button',{class:'btn pri',onclick:()=>start()},ic('camera'),'Open camera'))));
     api.hide=closeCam;
+    api.retake=i=>{retakeIdx=i;start()};
   }
 
   el.append(dz,
-    h('div',{class:'panel'},h('div',{class:'opts'},
-      field('Auto-crop',autoSel),field('Filter (all pages)',filter),field('Page size',size),field('Orientation',orient),field('Margin',margin),field('Quality',qual),field('File name',fname))),
+    (()=>{
+      const body=h('div',{class:'setbody',hidden:true},h('div',{class:'opts'},
+        field('Auto-crop',autoSel),field('Filter (all pages)',filter),field('Page size',size),field('Orientation',orient),field('Margin',margin),field('Quality',qual),field('File name',fname)));
+      const chev=ic('chev');chev.classList.add('chev');
+      const tg=h('button',{class:'setbtn','aria-expanded':'false',onclick:()=>{const o=body.hidden;body.hidden=!o;tg.setAttribute('aria-expanded',String(o))}},'Page settings',h('span',{class:'hint'},'Auto-crop, filter, size, margin, quality, file name'),chev);
+      return h('div',{class:'panel'},tg,body);
+    })(),
     h('div',{class:'bar'},count,h('span',{class:'grow'}),autoAll,noCrops,clear,build),status,grid);
   render();return api;
 }
