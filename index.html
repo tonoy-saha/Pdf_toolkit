@@ -990,7 +990,7 @@ function getEditor(){
 function imageTool(scan){
   const items=[];let uid=0,busy=false,scanN=0;
   const grid=h('div',{class:'grid'}),count=h('span',{class:'stat'}),status=h('div',{class:'stat'});
-  const size=sel([['a4','A4'],['letter','US Letter'],['fit','Fit to image']],'a4');
+  const size=sel([['fit','Fit to image (no forced size)'],['a4','A4'],['letter','US Letter']],scan?'fit':'a4');
   const orient=sel([['auto','Auto'],['portrait','Portrait'],['landscape','Landscape']],'auto');
   const margin=sel([['0','None'],['18','Small'],['36','Medium'],['54','Large']],scan?'0':'18');
   const qual=sel([['high','High (best quality)'],['med','Medium'],['small','Small file']],'high');
@@ -1081,7 +1081,7 @@ function imageTool(scan){
     grid.setAttribute('display','none');
     ov.append(grid);
     const flash=h('div',{class:'camflash'});
-    const stage=h('div',{class:'camstage'},video,ov,h('div',{class:'camguide'},h('i'),h('i'),h('i'),h('i')),flash);
+    const stage=h('div',{class:'camstage'},video,ov,flash);
     const pill=h('div',{class:'campill'},'Starting camera…');
     const area=h('div',{class:'camarea'},stage,pill);
     const torchBtn=h('button',{class:'cbtn',title:'Flash',hidden:true,onclick:()=>toggleTorch()},ic('bolt'));
@@ -1124,7 +1124,7 @@ function imageTool(scan){
         const caps=track.getCapabilities?track.getCapabilities():{};
         torchBtn.hidden=!caps.torch;torchOn=false;torchBtn.classList.remove('on');
         try{if(caps.focusMode&&caps.focusMode.includes('continuous'))await track.applyConstraints({advanced:[{focusMode:'continuous'}]})}catch(_){}
-        fit();setPill('Fit the page in the frame, then tap the shutter');
+        fit();setPill('Point at the page and tap the shutter');
       }catch(e){
         cam.classList.remove('on');
         toast('Camera not available: '+(e.message||e.name),'err');
