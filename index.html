@@ -383,7 +383,7 @@ function loadImage(file){
     img.src=url;
   });
 }
-const FILTERS=[['none','Original'],['auto','Auto'],['magic','Magic color'],['shadow','No shadows'],['light','Lighten'],['sharp','Sharpen'],['gray','Gray'],['bw','B&W'],['bw2','B&W soft']];
+const FILTERS=[['none','Original'],['scanner','Scanner'],['auto','Auto'],['magic','Magic color'],['shadow','No shadows'],['light','Lighten'],['sharp','Sharpen'],['gray','Gray'],['bw','B&W'],['bw2','B&W soft']];
 const NOFX={filter:'none',bright:0,contrast:0};
 const newFx=f=>({filter:f||'none',bright:0,contrast:0});
 
@@ -459,6 +459,7 @@ function applyFx(c,fx){
   const g=c.getContext('2d'),W=c.width,H=c.height,im=g.getImageData(0,0,W,H),d=im.data,n=W*H;
   if(mode==='bw'){normalizeBg(d,W,H);adaptiveBW(d,W,H);g.putImageData(im,0,0);return}
   const P={
+    scanner:{norm:1,lv:1,white:1,gam:1.45,sat:1.08,sh:.9},
     auto:{norm:1,lv:1,gam:1.2,sh:.5},
     magic:{norm:1,lv:1,gam:1.1,sat:1.18,sh:.6},
     shadow:{norm:1,sh:.3},
@@ -469,15 +470,16 @@ function applyFx(c,fx){
   }[mode]||{};
   if(P.norm)normalizeBg(d,W,H);
   if(P.gray)for(let i=0;i<d.length;i+=4){const y=.299*d[i]+.587*d[i+1]+.114*d[i+2];d[i]=d[i+1]=d[i+2]=y}
-  let lo=0;
+  let lo=0,hi=255;
   if(P.lv){
     const hist=new Uint32Array(256);
     for(let i=0;i<d.length;i+=4)hist[(.299*d[i]+.587*d[i+1]+.114*d[i+2])|0]++;
     lo=Math.min(90,pct(hist,n,.008));
+    if(P.white)hi=Math.max(lo+60,Math.min(250,pct(hist,n,.4)));   // paper -> pure white, like a flatbed scanner
   }
   const lut=new Uint8ClampedArray(256),k=1+(con+(P.con||0))/100,off=bri/250;
   for(let v=0;v<256;v++){
-    let t=P.lv?Math.max(0,(v-lo)/(255-lo)):v/255;
+    let t=P.lv?Math.min(1,Math.max(0,(v-lo)/(hi-lo))):v/255;
     if(P.gam)t=Math.pow(t,P.gam);
     if(P.lift)t=Math.pow(t,P.lift);
     if(P.soft){t=(t-.28)/.5;t=Math.min(1,Math.max(0,t));t=t*t*(3-2*t)}
@@ -890,11 +892,11 @@ function getEditor(){
   const bri=h('input',{type:'range',min:'-100',max:'100',value:'0',oninput:()=>{it.fx.bright=+bri.value;briV.textContent=bri.value;later()}});
   const con=h('input',{type:'range',min:'-100',max:'100',value:'0',oninput:()=>{it.fx.contrast=+con.value;conV.textContent=con.value;later()}});
   const cropSec=h('div',{style:'margin-bottom:18px'},h('h3',{},'Crop'),
-    h('div',{class:'bar',style:'margin:0'},btn([ic('crop'),'Auto'],autoCrop),btn('Adjust corners',()=>enterCrop()),btn('Remove',removeCrop)));
+    h('div',{class:'bar',style:'margin:0'},btn([ic('crop'),'Auto'],autoCrop),btn('Custom crop',()=>enterCrop()),btn('Remove',removeCrop)));
   const filterSide=h('div',{},cropSec,h('h3',{},'Filters'),chips,
     h('div',{class:'sl'},h('label',{},'Brightness',briV),bri),
     h('div',{class:'sl'},h('label',{},'Contrast',conV),con));
-  const cropHelp=h('div',{hidden:true},h('h3',{},'Adjust corners'),
+  const cropHelp=h('div',{hidden:true},h('h3',{},'Custom crop'),
     h('p',{class:'stat',style:'margin:0 0 12px'},'Drag the four round handles onto the corners of the page, then apply.'),
     h('div',{class:'bar',style:'margin:0'},btn('Detect again',detectAgain),btn('Cancel',cancelCrop),btn('Apply crop',applyCrop,'pri')));
   let startCrop=false,onRetake=null;
@@ -1014,7 +1016,7 @@ function imageTool(scan){
   const orient=sel([['auto','Auto'],['portrait','Portrait'],['landscape','Landscape']],'auto');
   const margin=sel([['0','None'],['18','Small'],['36','Medium'],['54','Large']],scan?'0':'18');
   const qual=sel([['high','High (best quality)'],['med','Medium'],['small','Small file']],'high');
-  const filter=sel(FILTERS,scan?'auto':'none',()=>{items.forEach(it=>{it.fx.filter=filter.value});render()});
+  const filter=sel(FILTERS,scan?'scanner':'none',()=>{items.forEach(it=>{it.fx.filter=filter.value});render()});
   const autoSel=sel([['off','Off'],['on','On (find page edges)']],scan?'on':'off');
   const fname=h('input',{type:'text',value:scan?'scan.pdf':'images.pdf'});
   const build=h('button',{class:'btn pri',disabled:true,onclick:make},'Create PDF');
@@ -1094,7 +1096,7 @@ function imageTool(scan){
     /* ----- CamScanner-style full-screen camera ----- */
     const NS='http://www.w3.org/2000/svg';
     let stream=null,track=null,devs=[],devIdx=0,mode='batch',showGrid=false,torchOn=false;
-    let loopT=0,shooting=false,shots=0,retakeIdx=-1,pending=null;
+    let loopT=0,shooting=false,shots=0,batchStart=0,retakeIdx=-1,pending=null;
     const video=h('video',{autoplay:true,playsinline:true,muted:true});
     const ov=document.createElementNS(NS,'svg');ov.setAttribute('class','camov');ov.setAttribute('viewBox','0 0 1 1');ov.setAttribute('preserveAspectRatio','none');
     const grid=document.createElementNS(NS,'g');
@@ -1110,9 +1112,9 @@ function imageTool(scan){
     const gridBtn=h('button',{class:'cbtn',title:'Grid',onclick:()=>{showGrid=!showGrid;gridBtn.classList.toggle('on',showGrid);grid.setAttribute('display',showGrid?'inline':'none')}},ic('grid'));
     const closeBtn=h('button',{class:'cbtn',title:'Close camera',onclick:()=>closeCam()},ic('x'));
     const tabS=h('button',{onclick:()=>setMode('single')},'Single'),tabB=h('button',{class:'on',onclick:()=>setMode('batch')},'Batch');
-    const thumb=h('button',{class:'camthumb',title:'Finish and review pages',onclick:()=>closeCam()});thumb.style.visibility='hidden';
+    const thumb=h('button',{class:'camthumb',title:'Finish and review pages',onclick:()=>finishBatch()});thumb.style.visibility='hidden';
     const shutter=h('button',{class:'shutter',title:'Capture (Space)',onclick:()=>shoot()},h('i'));
-    const doneBtn=h('button',{class:'camdone',onclick:()=>closeCam()},ic('check'),'Done');
+    const doneBtn=h('button',{class:'camdone',onclick:()=>finishBatch()},ic('check'),'Done');
     const rvMsg=h('div',{class:'rvmsg'}),rvArea=h('div',{class:'rvarea'});
     const rev=h('div',{id:'camrev'},rvMsg,rvArea,h('div',{class:'rvbar'},
       h('button',{class:'rvbtn',onclick:()=>retakeNow()},ic('rotL'),'Retake'),
@@ -1168,6 +1170,12 @@ function imageTool(scan){
       if(shots){status.textContent=`${shots} page${shots>1?'s':''} scanned. Click a page to adjust the crop or filter.`;shots=0}
       thumb.style.visibility='hidden';render();
     }
+    /* batch: review (and custom-crop) every page once the whole batch has been scanned */
+    function finishBatch(){
+      const n=shots,start=batchStart,was=mode;
+      closeCam();
+      if(was==='batch'&&n>0&&items.length){edit(Math.min(start,items.length-1));toast('Review your pages. Use Custom crop on any page that needs it.')}
+    }
     function setPill(t,ok){pill.textContent=t;pill.classList.toggle('ok',!!ok)}
     async function shoot(){
       if(!stream||!video.videoWidth||shooting)return;shooting=true;
@@ -1175,14 +1183,29 @@ function imageTool(scan){
       const c=document.createElement('canvas');c.width=video.videoWidth;c.height=video.videoHeight;
       c.getContext('2d').drawImage(video,0,0);
       try{
-        const blob=await new Promise(r=>c.toBlob(r,'image/jpeg',.95));
+        let blob=null;
+        /* use the camera's real still-photo mode when it has one: sharper, autofocused, full resolution */
+        if(window.ImageCapture&&track){
+          try{
+            const pb=await new ImageCapture(track).takePhoto();
+            const bm=await createImageBitmap(pb);
+            if((bm.width>=bm.height)===(c.width>=c.height)&&bm.width*bm.height>=c.width*c.height*.8)blob=pb;
+            bm.close&&bm.close();
+          }catch(_){}
+        }
+        if(!blob)blob=await new Promise(r=>c.toBlob(r,'image/jpeg',.98));
         const f=new File([blob],`scan-${String(++scanN).padStart(2,'0')}.jpg`,{type:'image/jpeg'});
         const m=await loadImage(f);
         const item={id:++uid,name:f.name,rot:0,fx:newFx(filter.value),crop:null,...m};
         if(retakeIdx>=0&&items[retakeIdx]){item.rot=0;item.fx={...items[retakeIdx].fx}}
         await new Promise(r=>setTimeout(r,30));      // let the flash and the UI paint first
         const found=autoCropItem(item);              // smart crop runs after the photo is taken
-        pending=item;showReview(found);
+        if(mode==='batch'&&retakeIdx<0){
+          if(shots===0)batchStart=items.length;
+          items.push(item);shots++;
+          const t=drawItem(item,160);thumb.replaceChildren(t,h('span',{class:'n'},String(shots)));thumb.style.visibility='visible';
+          setPill(`Page ${shots} captured${found?'':' (edges not found)'}. Next page, or tap Done`,found);
+        }else{pending=item;showReview(found)}
       }catch(e){console.error(e);toast('Could not capture the page','err')}
       shooting=false;
     }
