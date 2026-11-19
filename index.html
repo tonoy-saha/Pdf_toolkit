@@ -1096,7 +1096,7 @@ function imageTool(scan){
     /* ----- CamScanner-style full-screen camera ----- */
     const NS='http://www.w3.org/2000/svg';
     let stream=null,track=null,devs=[],devIdx=0,mode='batch',showGrid=false,torchOn=false;
-    let loopT=0,shooting=false,shots=0,batchStart=0,retakeIdx=-1,pending=null;
+    let camStart=0,loopT=0,shooting=false,shots=0,batchStart=0,retakeIdx=-1,pending=null;
     const video=h('video',{autoplay:true,playsinline:true,muted:true});
     const ov=document.createElementNS(NS,'svg');ov.setAttribute('class','camov');ov.setAttribute('viewBox','0 0 1 1');ov.setAttribute('preserveAspectRatio','none');
     const grid=document.createElementNS(NS,'g');
@@ -1146,7 +1146,7 @@ function imageTool(scan){
         const v=deviceId?{...base,deviceId:{exact:deviceId}}:{...base,facingMode:{ideal:'environment'}};
         stream=await navigator.mediaDevices.getUserMedia({video:v,audio:false});
         track=stream.getVideoTracks()[0];
-        video.srcObject=stream;await video.play().catch(()=>{});
+        video.srcObject=stream;await video.play().catch(()=>{});camStart=performance.now();
         devs=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='videoinput');
         const id=track.getSettings().deviceId;devIdx=Math.max(0,devs.findIndex(d=>d.deviceId===id));
         flipBtn.hidden=devs.length<2;
@@ -1177,23 +1177,45 @@ function imageTool(scan){
       if(was==='batch'&&n>0&&items.length){edit(Math.min(start,items.length-1));toast('Review your pages. Use Custom crop on any page that needs it.')}
     }
     function setPill(t,ok){pill.textContent=t;pill.classList.toggle('ok',!!ok)}
+    /* sharpness (variance of the Laplacian) + brightness spread of a frame, measured on a small copy */
+    function frameStats(src){
+      const w=200,h2=Math.max(2,Math.round(200*src.height/src.width)),t=document.createElement('canvas');t.width=w;t.height=h2;
+      const g=t.getContext('2d',{willReadFrequently:true});g.drawImage(src,0,0,w,h2);
+      const d=g.getImageData(0,0,w,h2).data,Y=new Float32Array(w*h2);
+      let sum=0,sq=0,r=0,bl=0;
+      for(let i=0,k=0;i<d.length;i+=4,k++){const y=.299*d[i]+.587*d[i+1]+.114*d[i+2];Y[k]=y;sum+=y;sq+=y*y;r+=d[i];bl+=d[i+2]}
+      const n=w*h2,mean=sum/n,sd=Math.sqrt(Math.max(0,sq/n-mean*mean));
+      let ls=0,lq=0,c=0;
+      for(let y=1;y<h2-1;y++)for(let x=1;x<w-1;x++){const k=y*w+x,l=4*Y[k]-Y[k-1]-Y[k+1]-Y[k-w]-Y[k+w];ls+=l;lq+=l*l;c++}
+      const lm=ls/c;
+      return {sharp:lq/c-lm*lm,sd,mean,blue:(bl-r)/n};
+    }
+    const wait=ms=>new Promise(r=>setTimeout(r,ms));
     async function shoot(){
-      if(!stream||!video.videoWidth||shooting)return;shooting=true;
+      if(!stream||shooting)return;
+      /* never shoot before the camera has really started: the first frames are blank, blurry or tinted while focus and white balance settle */
+      if(!video.videoWidth||video.readyState<2||performance.now()-camStart<1200){setPill('Camera is still adjusting… one moment');return}
+      shooting=true;
       flash.classList.remove('go');void flash.offsetWidth;flash.classList.add('go');
-      const c=document.createElement('canvas');c.width=video.videoWidth;c.height=video.videoHeight;
-      c.getContext('2d').drawImage(video,0,0);
       try{
-        let blob=null;
-        /* use the camera's real still-photo mode when it has one: sharper, autofocused, full resolution */
-        if(window.ImageCapture&&track){
-          try{
-            const pb=await new ImageCapture(track).takePhoto();
-            const bm=await createImageBitmap(pb);
-            if((bm.width>=bm.height)===(c.width>=c.height)&&bm.width*bm.height>=c.width*c.height*.8)blob=pb;
-            bm.close&&bm.close();
-          }catch(_){}
+        /* grab a short burst and keep the sharpest, best-exposed frame */
+        let best=null,bestStat=null;
+        for(let i=0;i<4;i++){
+          if(!stream||!video.videoWidth)break;
+          const c=document.createElement('canvas');c.width=video.videoWidth;c.height=video.videoHeight;
+          c.getContext('2d').drawImage(video,0,0);
+          const st=frameStats(c);
+          if(!bestStat||st.sharp>bestStat.sharp){best=c;bestStat=st}
+          if(i<3)await wait(90);
         }
-        if(!blob)blob=await new Promise(r=>c.toBlob(r,'image/jpeg',.98));
+        if(!best)throw new Error('no frame');
+        /* reject blank / washed-out / out-of-focus frames instead of saving them */
+        if(bestStat.sd<9||bestStat.sharp<4){
+          toast('That shot was blurry or blank. Hold the page steady and tap again.','err');
+          setPill('Hold steady, let it focus, then tap again');shooting=false;return;
+        }
+        const c=best;
+        let blob=await new Promise(r=>c.toBlob(r,'image/jpeg',.98));
         const f=new File([blob],`scan-${String(++scanN).padStart(2,'0')}.jpg`,{type:'image/jpeg'});
         const m=await loadImage(f);
         const item={id:++uid,name:f.name,rot:0,fx:newFx(filter.value),crop:null,...m};
